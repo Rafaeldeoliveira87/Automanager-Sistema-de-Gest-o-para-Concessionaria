@@ -11,4 +11,5 @@ concessionaria-desk/concessionaria-deskt/resources/config.properties
 # Saídas de build
 **/target/
 **/node_modules/
+**/.idea/
 *.class

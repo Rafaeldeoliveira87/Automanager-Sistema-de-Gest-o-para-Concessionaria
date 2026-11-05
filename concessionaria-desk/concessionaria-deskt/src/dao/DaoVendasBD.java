@@ -61,13 +61,14 @@ public class DaoVendasBD implements DaoVenda {
              ResultSet rs = pstmt.executeQuery()) {
 
             while (rs.next()) {
+                Date data = rs.getDate("data_venda");
                 vendas.add(new Vendas(
                     rs.getInt("id"),
                     rs.getInt("id_carro"),
                     rs.getInt("id_funcionario"),
                     rs.getDouble("valor_venda"),
                     rs.getDouble("comissao"),
-                    rs.getDate("data_venda").toLocalDate()
+                    data == null ? null : data.toLocalDate()
                 ));
             }
 
@@ -80,30 +81,68 @@ public class DaoVendasBD implements DaoVenda {
 
     @Override
     public void update(Vendas venda) throws SQLException {
-        String sql = "UPDATE vendas SET id_carro=?, id_funcionario=?, valor_venda=?, comissao=?, data_venda=? WHERE id=?";
+        if (venda.getDataVenda() == null) throw new SQLException("A venda precisa ter uma data.");
+        String sql = "UPDATE vendas SET id_funcionario=?, valor_venda=?, comissao=?, data_venda=? WHERE id=? AND id_carro=?";
 
-        try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-
-            pstmt.setInt(1, venda.getIdCarro());
-            pstmt.setInt(2, venda.getIdFuncionario());
-            pstmt.setDouble(3, venda.getValorvenda());
-            pstmt.setDouble(4, venda.getComissao());
-            pstmt.setDate(5, Date.valueOf(venda.getDataVenda()));
-            pstmt.setInt(6, venda.getIdVenda());
-            pstmt.executeUpdate();
+        try (Connection conn = DatabaseConnection.getConnection()) {
+            conn.setAutoCommit(false);
+            try {
+                try (PreparedStatement ps = conn.prepareStatement("SELECT id_carro FROM vendas WHERE id=? FOR UPDATE")) {
+                    ps.setInt(1, venda.getIdVenda());
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) throw new SQLException("Venda não encontrada.");
+                        if (rs.getInt("id_carro") != venda.getIdCarro())
+                            throw new SQLException("Não é permitido trocar o veículo de uma venda ativa.");
+                    }
+                }
+                try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                    ps.setInt(1, venda.getIdFuncionario());
+                    ps.setDouble(2, venda.getValorvenda());
+                    ps.setDouble(3, venda.getComissao());
+                    ps.setDate(4, Date.valueOf(venda.getDataVenda()));
+                    ps.setInt(5, venda.getIdVenda());
+                    ps.setInt(6, venda.getIdCarro());
+                    ps.executeUpdate();
+                }
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            }
         }
     }
 
     @Override
     public void deleteById(int id) throws SQLException {
-        String sql = "DELETE FROM vendas WHERE id = ?";
-
-        try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-
-            pstmt.setInt(1, id);
-            pstmt.executeUpdate();
+        try (Connection conn = DatabaseConnection.getConnection()) {
+            conn.setAutoCommit(false);
+            try {
+                Integer idCarro = null;
+                try (PreparedStatement ps = conn.prepareStatement("SELECT id_carro FROM vendas WHERE id=? FOR UPDATE")) {
+                    ps.setInt(1, id);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) idCarro = rs.getInt("id_carro");
+                    }
+                }
+                if (idCarro == null) { conn.commit(); return; }
+                try (PreparedStatement ps = conn.prepareStatement("DELETE FROM vendas WHERE id=?")) {
+                    ps.setInt(1, id);
+                    ps.executeUpdate();
+                }
+                // Exclusão representa cancelamento; só devolve o carro se não restar outra venda ativa.
+                try (PreparedStatement ps = conn.prepareStatement("""
+                        UPDATE carros SET status='Disponível'
+                        WHERE id=? AND NOT EXISTS (SELECT 1 FROM vendas WHERE id_carro=?)
+                        """)) {
+                    ps.setInt(1, idCarro);
+                    ps.setInt(2, idCarro);
+                    ps.executeUpdate();
+                }
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            }
         }
     }
 }

@@ -3,6 +3,9 @@ package view;
 import java.awt.*;
 import java.text.NumberFormat;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.YearMonth;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
 import javax.swing.*;
@@ -21,6 +24,7 @@ import entidade.Funcionario;
 import entidade.Usuario;
 import entidade.Vendas;
 import service.ComissaoService;
+import service.DashboardService;
 
 /**
  * Interface principal da Concessionária — versão melhorada.
@@ -43,6 +47,7 @@ public class InterfaceGrafica extends JFrame {
     private final DaoUsuario     usuarioDAO     = new DaoUsuario();
     private final DaoVenda       vendasDAO      = new DaoVendasBD();
     private final Usuario        usuarioLogado;
+    private final DashboardService dashboardService = new DashboardService();
 
     // ── Models das tabelas ──────────────────────────────────────────────
     private final DefaultTableModel dtmCarros   = new DefaultTableModel(
@@ -65,6 +70,12 @@ public class InterfaceGrafica extends JFrame {
 
     // ── Cards do dashboard ──────────────────────────────────────────────
     private JLabel lblTotalCarros, lblDisponiveis, lblTotalFunc, lblTotalVendas, lblReceitaTotal, lblTaxaConversao;
+    private JLabel lblVariacaoVendas, lblVariacaoReceita, lblDashPeriodo, lblDashAviso;
+    private JComboBox<String> comboPeriodoDashboard;
+    private DashboardService.Resultado ultimoDashboard;
+    private DashboardCombinedChart graficoReceitaVendas;
+    private DashboardDonutChart graficoEstoque;
+    private DashboardSellerChart graficoVendedores;
 
     // ── Referência ao painel de relatórios ──────────────────────────────
     private RelatorioPanel relatorioPanel;
@@ -249,11 +260,28 @@ public class InterfaceGrafica extends JFrame {
         subtitulo.setFont(FONTE_PADRAO);
         topoBemVindo.add(bemvindo,  BorderLayout.NORTH);
         topoBemVindo.add(subtitulo, BorderLayout.SOUTH);
+        JPanel controlesDashboard = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        controlesDashboard.setBackground(COR_FUNDO);
+        comboPeriodoDashboard = new JComboBox<>(new String[]{"Todo o período", "Últimos 3 meses", "Últimos 6 meses", "Últimos 12 meses"});
+        JButton btnAtualizarDashboard = criarBotao("Atualizar", COR_BOTAO);
+        comboPeriodoDashboard.setToolTipText("Filtra vendas, receita e ranking; o estoque mostra a situação atual.");
+        btnAtualizarDashboard.setToolTipText("Consultar novamente os dados do banco.");
+        btnAtualizarDashboard.addActionListener(e -> atualizarDashboard());
+        comboPeriodoDashboard.addActionListener(e -> atualizarDashboard());
+        controlesDashboard.add(new JLabel("Período:"));
+        controlesDashboard.add(comboPeriodoDashboard);
+        controlesDashboard.add(btnAtualizarDashboard);
+        topoBemVindo.add(controlesDashboard, BorderLayout.EAST);
         dash.add(topoBemVindo, BorderLayout.NORTH);
+
+        JPanel conteudo = new JPanel(new BorderLayout(0, 12));
+        conteudo.setBackground(COR_FUNDO);
 
         // Grid de cards
         JPanel cards = new JPanel(new GridLayout(2, 3, 16, 12));
         cards.setBackground(COR_FUNDO);
+        cards.setPreferredSize(new Dimension(900, 182));
+        cards.setMaximumSize(new Dimension(Integer.MAX_VALUE, 182));
 
         lblTotalCarros  = new JLabel("—");
         lblDisponiveis  = new JLabel("—");
@@ -261,63 +289,174 @@ public class InterfaceGrafica extends JFrame {
         lblTotalVendas  = new JLabel("—");
         lblReceitaTotal = new JLabel("—");
         lblTaxaConversao = new JLabel("—");
+        lblVariacaoVendas = new JLabel(" ");
+        lblVariacaoReceita = new JLabel(" ");
 
         cards.add(criarCardDash("Total de Carros",   lblTotalCarros,   COR_BOTAO));
         cards.add(criarCardDash("Disponíveis",       lblDisponiveis,   new Color(39, 174, 96)));
         cards.add(criarCardDash("Funcionários",      lblTotalFunc,     new Color(142, 68, 173)));
-        cards.add(criarCardDash("Vendas Realizadas", lblTotalVendas,   new Color(211, 84, 0)));
-        cards.add(criarCardDash("Receita Total",     lblReceitaTotal,  new Color(22, 160, 133)));
-        cards.add(criarCardDash("Taxa de Conversão", lblTaxaConversao, new Color(241, 196, 15)));
+        cards.add(criarCardDash("Vendas no período", lblTotalVendas,   new Color(211, 84, 0), lblVariacaoVendas));
+        cards.add(criarCardDash("Receita no período", lblReceitaTotal,  new Color(22, 160, 133), lblVariacaoReceita));
+        cards.add(criarCardDash("% do Estoque Vendido", lblTaxaConversao, new Color(241, 196, 15)));
 
-        dash.add(cards, BorderLayout.CENTER);
+        JPanel graficos = new JPanel(new GridLayout(1, 3, 12, 0));
+        graficos.setBackground(COR_FUNDO);
+        graficos.setPreferredSize(new Dimension(900, 290));
+        graficos.setMinimumSize(new Dimension(0, 250));
+        graficoReceitaVendas = new DashboardCombinedChart();
+        graficoEstoque = new DashboardDonutChart();
+        graficoVendedores = new DashboardSellerChart();
+        graficoReceitaVendas.setOnMonthClick(this::mostrarVendasDoMes);
+        graficoEstoque.setOnStatusClick(this::mostrarCarrosDoStatus);
+        graficoVendedores.setOnSellerClick(this::mostrarVendasDoVendedor);
+        graficos.add(graficoReceitaVendas);
+        graficos.add(graficoEstoque);
+        graficos.add(graficoVendedores);
+        conteudo.add(cards, BorderLayout.NORTH);
+        conteudo.add(graficos, BorderLayout.CENTER);
+        dash.add(conteudo, BorderLayout.CENTER);
 
         // Rodapé do dashboard
-        JPanel rodape = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        JPanel rodape = new JPanel(new BorderLayout(0, 3));
         rodape.setBackground(COR_FUNDO);
-        JLabel dica = new JLabel("Use a aba Relatórios para análises detalhadas por período.");
-        dica.setForeground(COR_TEXTO_SEC);
-        dica.setFont(new Font("Segoe UI", Font.ITALIC, 12));
-        rodape.add(dica);
+        JPanel infoRodape = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        infoRodape.setBackground(COR_FUNDO);
+        lblDashPeriodo = new JLabel("Período: —");
+        lblDashPeriodo.setForeground(COR_TEXTO_SEC);
+        lblDashPeriodo.setFont(new Font("Segoe UI", Font.PLAIN, 10));
+        infoRodape.add(lblDashPeriodo);
+        rodape.add(infoRodape, BorderLayout.NORTH);
+        lblDashAviso = new JLabel(" ");
+        lblDashAviso.setForeground(new Color(255, 204, 102));
+        lblDashAviso.setFont(new Font("Segoe UI", Font.PLAIN, 10));
+        rodape.add(lblDashAviso, BorderLayout.SOUTH);
         dash.add(rodape, BorderLayout.SOUTH);
         return dash;
     }
 
     private JPanel criarCardDash(String titulo, JLabel valorLabel, Color cor) {
+        return criarCardDash(titulo, valorLabel, cor, null);
+    }
+
+    private JPanel criarCardDash(String titulo, JLabel valorLabel, Color cor, JLabel variacao) {
         JPanel card = new JPanel();
-        card.setPreferredSize(new Dimension(0, 120));
+        card.setPreferredSize(new Dimension(0, 86));
         card.setBackground(new Color(18, 35, 70));
         card.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(0, 3, 0, 0, cor),
-                new EmptyBorder(14, 14, 14, 14)));
-        card.setLayout(new BorderLayout(0, 8));
+                new EmptyBorder(9, 12, 9, 12)));
+        card.setLayout(new BorderLayout(0, 1));
 
         JLabel lblTitulo = new JLabel(titulo);
         lblTitulo.setForeground(COR_TEXTO_SEC);
         lblTitulo.setFont(new Font("Segoe UI", Font.PLAIN, 11));
 
         valorLabel.setForeground(COR_BRANCO);
-        valorLabel.setFont(new Font("Segoe UI", Font.BOLD, 24));
+        valorLabel.setFont(new Font("Segoe UI", Font.BOLD, 20));
 
-        card.add(lblTitulo,  BorderLayout.CENTER);
-        card.add(valorLabel, BorderLayout.SOUTH);
+        card.add(lblTitulo, BorderLayout.NORTH);
+        card.add(valorLabel, BorderLayout.CENTER);
+        if (variacao != null) {
+            variacao.setFont(new Font("Segoe UI", Font.PLAIN, 9));
+            variacao.setForeground(COR_TEXTO_SEC);
+            card.add(variacao, BorderLayout.SOUTH);
+        }
         return card;
     }
 
     private void atualizarDashboard() {
-        List<Carro> carros = carroDAO.loadAll();
-        long disponiveis   = carros.stream().filter(c -> "Disponível".equals(c.getStatus())).count();
-        List<Vendas> vendas = vendasDAO.listarVendas();
-        double receita     = vendas.stream().mapToDouble(Vendas::getValorvenda).sum();
+        try {
+            DashboardService.Periodo periodo = DashboardService.Periodo.porRotulo(
+                    String.valueOf(comboPeriodoDashboard.getSelectedItem()));
+            DashboardService.Resultado resultado = dashboardService.carregar(periodo);
+            ultimoDashboard = resultado;
+            lblTotalCarros.setText(String.valueOf(resultado.totalCarros()));
+            lblDisponiveis.setText(String.valueOf(resultado.disponiveis()));
+            lblTotalFunc.setText(String.valueOf(resultado.totalFuncionarios()));
+            lblTotalVendas.setText(String.valueOf(resultado.vendasRealizadas()));
+            lblReceitaTotal.setText(NumberFormat.getCurrencyInstance(new Locale("pt", "BR"))
+                    .format(resultado.receitaTotal()));
+            lblTaxaConversao.setText(String.format(new Locale("pt", "BR"), "%.1f%%", resultado.percentualEstoqueVendido()));
+            configurarVariacao(lblVariacaoVendas, resultado.variacaoVendas());
+            configurarVariacao(lblVariacaoReceita, resultado.variacaoReceita());
+            graficoReceitaVendas.setResultado(resultado);
+            graficoEstoque.setResultado(resultado);
+            graficoVendedores.setResultado(resultado);
 
-        lblTotalCarros.setText(String.valueOf(carros.size()));
-        lblDisponiveis.setText(String.valueOf(disponiveis));
-        lblTotalFunc.setText(String.valueOf(funcionarioDAO.loadAll().size()));
-        lblTotalVendas.setText(String.valueOf(vendas.size()));
-        lblReceitaTotal.setText(NumberFormat.getCurrencyInstance(new Locale("pt", "BR")).format(receita));
-        long vendidos = carros.stream().filter(c -> "Vendido".equalsIgnoreCase(c.getStatus())).count();
-        long totalParaConversao = vendidos + disponiveis;
-        double taxaConversao = totalParaConversao == 0 ? 0d : (vendidos * 100d) / totalParaConversao;
-        lblTaxaConversao.setText(String.format(new Locale("pt", "BR"), "%.1f%%", taxaConversao));
+            String atualizado = LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm"));
+            lblDashPeriodo.setText("Vendas: " + resultado.periodo().rotulo() + " (" + resultado.periodoCoberto()
+                    + ")  •  Meses sem vendas omitidos  •  Estoque atual  •  Atualizado: " + atualizado);
+            lblDashAviso.setText(resultado.avisos().isEmpty() ? " " : "⚠ " + resultado.avisos().get(0));
+            lblDashAviso.setToolTipText(resultado.avisos().isEmpty() ? null
+                    : "<html>" + String.join("<br>", resultado.avisos()) + "</html>");
+        } catch (Exception ex) {
+            System.err.println("Falha ao carregar o dashboard: " + ex.getMessage());
+            lblTotalCarros.setText("—"); lblDisponiveis.setText("—"); lblTotalFunc.setText("—");
+            lblTotalVendas.setText("—"); lblReceitaTotal.setText("—"); lblTaxaConversao.setText("—");
+            lblVariacaoVendas.setText(" "); lblVariacaoReceita.setText(" ");
+            ultimoDashboard = null;
+            lblDashPeriodo.setText("Dados indisponíveis");
+            lblDashAviso.setText("Não foi possível carregar os indicadores. Verifique a conexão com o banco.");
+            graficoReceitaVendas.setErro("Não foi possível carregar os dados.");
+            graficoEstoque.setErro("Não foi possível carregar os dados.");
+            graficoVendedores.setErro("Não foi possível carregar os dados.");
+        }
+    }
+
+    private void configurarVariacao(JLabel label, String texto) {
+        label.setText(texto);
+        label.setForeground(texto.startsWith("▲") ? new Color(80, 210, 145)
+                : texto.startsWith("▼") ? new Color(255, 125, 125) : COR_TEXTO_SEC);
+    }
+
+    private void mostrarVendasDoMes(YearMonth mes) {
+        if (ultimoDashboard == null) return;
+        List<DashboardService.VendaDetalhe> vendas = ultimoDashboard.vendasDetalhe().stream()
+                .filter(v -> YearMonth.from(v.data()).equals(mes)).toList();
+        abrirTabelaVendas("Vendas de " + mes.format(DateTimeFormatter.ofPattern("MMMM 'de' yyyy", new Locale("pt", "BR"))), vendas);
+    }
+
+    private void mostrarVendasDoVendedor(String vendedor) {
+        if (ultimoDashboard == null) return;
+        List<DashboardService.VendaDetalhe> vendas = ultimoDashboard.vendasDetalhe().stream()
+                .filter(v -> v.vendedor().equals(vendedor)).toList();
+        abrirTabelaVendas("Vendas de " + vendedor, vendas);
+    }
+
+    private void abrirTabelaVendas(String titulo, List<DashboardService.VendaDetalhe> vendas) {
+        Object[][] linhas = vendas.stream().map(v -> new Object[]{v.data().format(DateTimeFormatter.ofPattern("dd/MM/yyyy")),
+                v.carro(), v.vendedor(), NumberFormat.getCurrencyInstance(new Locale("pt", "BR")).format(v.valor())})
+                .toArray(Object[][]::new);
+        abrirTabelaDetalhe(titulo, new Object[]{"Data", "Veículo", "Vendedor", "Valor"}, linhas);
+    }
+
+    private void mostrarCarrosDoStatus(String status) {
+        if (ultimoDashboard == null) return;
+        Object[][] linhas = ultimoDashboard.carros().stream()
+                .filter(c -> status.equalsIgnoreCase(c.status()))
+                .map(c -> new Object[]{c.id(), c.nome(), c.modelo(), c.ano()})
+                .toArray(Object[][]::new);
+        abrirTabelaDetalhe("Veículos " + status.toLowerCase(new Locale("pt", "BR")),
+                new Object[]{"ID", "Marca/nome", "Modelo", "Ano"}, linhas);
+    }
+
+    private void abrirTabelaDetalhe(String titulo, Object[] colunas, Object[][] linhas) {
+        if (linhas.length == 0) {
+            JOptionPane.showMessageDialog(this, "Não há registros para este item.", titulo, JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        DefaultTableModel model = new DefaultTableModel(linhas, colunas) {
+            @Override public boolean isCellEditable(int row, int column) { return false; }
+        };
+        JTable tabela = new JTable(model);
+        estilizarTabela(tabela);
+        tabela.setFillsViewportHeight(true);
+        JDialog dialogo = new JDialog(this, titulo, true);
+        dialogo.setLayout(new BorderLayout());
+        dialogo.add(new JScrollPane(tabela), BorderLayout.CENTER);
+        dialogo.setSize(700, 360);
+        dialogo.setLocationRelativeTo(this);
+        dialogo.setVisible(true);
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -464,11 +603,11 @@ public class InterfaceGrafica extends JFrame {
         JTextField txtModelo = new JTextField(atual != null ? atual.getModelo() : "");
         JTextField txtAno = new JTextField(atual != null ? String.valueOf(atual.getAno()) : "");
         JTextField txtPreco = new JTextField(atual != null ? String.valueOf(atual.getPreco()) : "");
-        JComboBox<String> comboStatus = new JComboBox<>(new String[]{"Disponível", "Vendido"});
         JComboBox<String> comboNivel = new JComboBox<>(new String[]{"Basico", "Medio", "Luxo"});
+        JLabel lblStatus = new JLabel(atual == null ? "Disponível (definido automaticamente)"
+                : atual.getStatus() + " (gerenciado pelo fluxo de vendas)");
 
         if (atual != null) {
-            comboStatus.setSelectedItem(atual.getStatus());
             comboNivel.setSelectedItem(atual.getNivel());
         }
 
@@ -477,7 +616,7 @@ public class InterfaceGrafica extends JFrame {
         adicionarLinhaFormulario(form, "Modelo:", txtModelo);
         adicionarLinhaFormulario(form, "Ano:", txtAno);
         adicionarLinhaFormulario(form, "Preço:", txtPreco);
-        adicionarLinhaFormulario(form, "Status:", comboStatus);
+        adicionarLinhaFormulario(form, "Status:", lblStatus);
         adicionarLinhaFormulario(form, "Nível:", comboNivel);
 
         abrirDialogoFormulario(atual == null ? "Adicionar carro" : "Editar carro", form, dialog -> {
@@ -491,15 +630,14 @@ public class InterfaceGrafica extends JFrame {
             try {
                 int ano = Integer.parseInt(txtAno.getText().trim());
                 double preco = parseNumeroBr(txtPreco.getText());
-                String status = (String) comboStatus.getSelectedItem();
                 String nivel = (String) comboNivel.getSelectedItem();
 
                 if (atual == null) {
-                    carroDAO.save(new Carro(0, nome, modelo, ano, preco, status, nivel));
+                    carroDAO.save(new Carro(0, nome, modelo, ano, preco, "Disponível", nivel));
                     dialog.dispose();
                     sucesso("Carro salvo com sucesso!");
                 } else {
-                    carroDAO.update(new Carro(atual.getId(), nome, modelo, ano, preco, status, nivel));
+                    carroDAO.update(new Carro(atual.getId(), nome, modelo, ano, preco, atual.getStatus(), nivel));
                     dialog.dispose();
                     sucesso("Carro editado com sucesso!");
                 }
@@ -647,37 +785,14 @@ public class InterfaceGrafica extends JFrame {
     private void excluirVenda(JTable tabela) {
         int linha = tabela.getSelectedRow();
         if (linha < 0) { aviso("Selecione uma venda para excluir."); return; }
-        if (!confirmar("Excluir a venda selecionada? O carro voltará a ficar Disponível.")) return;
+        if (!confirmar("Excluir a venda selecionada? O carro voltará a ficar Disponível se não houver outra venda ativa.")) return;
         try {
             int idVenda = (int) dtmVendas.getValueAt(linha, 0);
-
-            // MELHORIA: restaurar status do carro ao excluir a venda
-            // Busca o idCarro armazenado na linha (índice interno no model)
-            // Para isso, buscamos a venda na lista completa pelo ID
-            List<Vendas> todas = vendasDAO.listarVendas();
-            Vendas vendaAlvo = todas.stream()
-                    .filter(v -> v.getIdVenda() == idVenda)
-                    .findFirst().orElse(null);
-
-            vendasDAO.deleteById(idVenda);
-
-            if (vendaAlvo != null) {
-                // Restaura status para Disponível na mesma operação
-                List<Carro> carros = carroDAO.loadAll();
-                carros.stream()
-                        .filter(c -> c.getId() == vendaAlvo.getIdCarro())
-                        .findFirst()
-                        .ifPresent(c -> {
-                            try {
-                                carroDAO.update(new Carro(c.getId(), c.getNome(), c.getModelo(),
-                                        c.getAno(), c.getPreco(), "Disponível", c.getNivel()));
-                            } catch (Exception ignored) {}
-                        });
-            }
+            vendasDAO.deleteById(idVenda); // remove a venda e atualiza o estoque na mesma transação
 
             preencherVendas(vendasDAO.listarVendas());
             atualizarDashboard();
-            sucesso("Venda excluída e carro disponibilizado.");
+            sucesso("Venda excluída. O estoque foi atualizado junto com a operação.");
         } catch (Exception e) {
             erro("Erro: " + e.getMessage());
         }

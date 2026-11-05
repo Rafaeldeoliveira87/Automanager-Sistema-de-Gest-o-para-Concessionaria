@@ -10,7 +10,7 @@ public class DaoCarroBD implements DaoCarro {
 
     @Override
     public void save(Carro carro) throws SQLException {
-        String sql = "INSERT INTO carros (nome, modelo, ano, preco, status, nivel) VALUES (?, ?, ?, ?, ?, ?)";
+        String sql = "INSERT INTO carros (nome, modelo, ano, preco, status, nivel) VALUES (?, ?, ?, ?, 'Disponível', ?)";
 
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
@@ -19,8 +19,7 @@ public class DaoCarroBD implements DaoCarro {
             pstmt.setString(2, carro.getModelo().trim());
             pstmt.setInt(3, carro.getAno());
             pstmt.setDouble(4, carro.getPreco());
-            pstmt.setString(5, carro.getStatus());
-            pstmt.setString(6, carro.getNivel());
+            pstmt.setString(5, carro.getNivel());
             pstmt.executeUpdate();
         }
     }
@@ -67,7 +66,8 @@ public class DaoCarroBD implements DaoCarro {
 
     @Override
     public void update(Carro carro) throws SQLException {
-        String sql = "UPDATE carros SET nome = ?, modelo = ?, ano = ?, preco = ?, status = ?, nivel = ? WHERE id = ?";
+        // O status é controlado pelas operações transacionais de venda/exclusão, nunca por edição cadastral.
+        String sql = "UPDATE carros SET nome = ?, modelo = ?, ano = ?, preco = ?, nivel = ? WHERE id = ?";
 
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
@@ -76,22 +76,24 @@ public class DaoCarroBD implements DaoCarro {
             pstmt.setString(2, carro.getModelo().trim());
             pstmt.setInt(3, carro.getAno());
             pstmt.setDouble(4, carro.getPreco());
-            pstmt.setString(5, carro.getStatus());
-            pstmt.setString(6, carro.getNivel());
-            pstmt.setInt(7, carro.getId());
+            pstmt.setString(5, carro.getNivel());
+            pstmt.setInt(6, carro.getId());
             pstmt.executeUpdate();
         }
     }
 
     @Override
     public void deleteById(int id) throws SQLException {
-        String sql = "DELETE FROM carros WHERE id = ?";
+        String sql = "DELETE FROM carros WHERE id = ? AND NOT EXISTS (SELECT 1 FROM vendas WHERE id_carro = ?)";
 
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
 
             pstmt.setInt(1, id);
-            pstmt.executeUpdate();
+            pstmt.setInt(2, id);
+            if (pstmt.executeUpdate() == 0) {
+                throw new SQLException("Não é possível excluir o veículo: ele não existe ou possui venda vinculada.");
+            }
         }
     }
 
